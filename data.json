@@ -1,4 +1,10 @@
-{
-    "detected_os": "windows",
-    "last_run": "Word Given: example_word\nWord Ciphered: ZXhhbXBsZV93b3Jk"
-}
+[
+    {
+        "site": "123",
+        "encrypted_password": "MTIz"
+    },
+    {
+        "site": "321",
+        "encrypted_password": "MzIx"
+    }
+]

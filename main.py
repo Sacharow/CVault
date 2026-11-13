@@ -19,7 +19,10 @@ def get_os_type():
 os_type = get_os_type()
 print(f"Wykryty system: {os_type}")
 
-word_to_cipher = "example_word"
+print("Input Source/Page: ")
+source = input()
+print("Input Simplified Password: ")
+word_to_cipher = input()
 
 # Wybór odpowiedniego skryptu zależnie od systemu
 if os_type == "windows":
@@ -32,12 +35,16 @@ else:
     result = subprocess.run(cmd, capture_output=True, text=True)
 
 output = result.stdout
-print(output)
 
-# Zapis do pliku
-data = {
-    "detected_os": os_type,
-    "last_run": output.strip()
-}
+with open("data.json", "r") as f:
+    data = json.load(f)
+
+    new_object = {
+        "site": source.strip(),
+        "encrypted_password": output.strip(),
+    }
+
+    data.append(new_object)
+
 with open("data.json", "w") as f:
     json.dump(data, f, indent=4)
