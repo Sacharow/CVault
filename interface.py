@@ -1,7 +1,6 @@
+import base64
 import json
 import os
-import subprocess
-import platform
 from datetime import datetime
 import flet as ft
 
@@ -55,16 +54,6 @@ def translate(settings, english, polish):
     return polish if settings["language"] == "pl" else english
 
 # --- Helper Functions ---
-def get_os_type():
-    system = platform.system()
-    if "ANDROID_ROOT" in os.environ or "ANDROID_DATA" in os.environ or "android" in platform.platform().lower():
-        return "android"
-    if system == "Windows":
-        return "windows"
-    if system == "Linux":
-        return "linux"
-    return "other"
-
 def load_data():
     if not os.path.exists(DATA_FILE):
         return []
@@ -92,18 +81,10 @@ def close_dialog(page: ft.Page, dialog: ft.AlertDialog):
         dialog.open = False
         page.update()
 
-def save_entry(source: str, password: str):
-    """Encrypt the password using the existing cipher scripts and store it in data.json with id and date."""
-    os_type = get_os_type()
-    if os_type == "windows":
-        # cipher.bat expects the plain password as the first argument
-        cmd = ["cipher.bat", password]
-        result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
-    else:
-        # Linux / Android uses cipher.sh
-        cmd = ["bash", "cipher.sh", password]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-    encrypted = result.stdout.strip()
+def save_entry(source: str, password: str, seed: str = ""):
+    """Encode the password, wrapped with the configured seed, and store it in data.json."""
+    fused_password = f"{seed}{password}{seed}"
+    encrypted = base64.b64encode(fused_password.encode("utf-8")).decode("ascii")
     # Load, append, and write back
     data = load_data()
     existing_ids = [item["id"] for item in data if isinstance(item, dict) and isinstance(item.get("id"), int)]
@@ -469,7 +450,7 @@ def build_add_view(page: ft.Page, settings=None):
             status.color = "#EF4444"
             page.update()
             return
-        save_entry(src, pwd)
+        save_entry(src, pwd, settings["seed"])
         status.value = translate(settings, "✓ Saved successfully!", "✓ Zapisano pomyślnie!")
         status.color = "#10B981"
         src_field.value = ""
@@ -608,6 +589,16 @@ def build_settings_view(page: ft.Page, settings, on_change):
                 language_dropdown,
                 theme_dropdown,
                 seed_field,
+                ft.Text(
+                    translate(
+                        settings,
+                        "Changing this seed changes the password output. Use the same seed on every device for matching results. This does not add cryptographic security.",
+                        "Zmiana ziarna zmienia wynik hasła. Aby uzyskać taki sam wynik na każdym urządzeniu, ustaw na nich to samo ziarno. Nie zwiększa to bezpieczeństwa kryptograficznego.",
+                    ),
+                    size=11,
+                    color=colors["muted"],
+                    text_align=ft.TextAlign.CENTER,
+                ),
             ],
             spacing=14,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -791,7 +782,7 @@ def main(page: ft.Page):
                                     [
                                         header_title,
                                         ft.Container(
-                                            content=ft.Text("v0.9", size=10, color="#818CF8", weight=ft.FontWeight.BOLD),
+                                            content=ft.Text("v1.0", size=10, color="#818CF8", weight=ft.FontWeight.BOLD),
                                             bgcolor="#1E1B4B",
                                             padding=ft.Padding(6, 2, 6, 2),
                                             border_radius=6,

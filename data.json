@@ -1,32 +1,8 @@
 [
     {
         "id": 1,
-        "site": "123",
-        "encrypted_password": "MTIz",
-        "date": "2026-11-14"
-    },
-    {
-        "id": 2,
-        "site": "321",
-        "encrypted_password": "MzIx",
-        "date": "2026-11-14"
-    },
-    {
-        "id": 3,
         "site": "Google",
-        "encrypted_password": "R29vZ2xl",
-        "date": "2026-11-14"
-    },
-    {
-        "id": 4,
-        "site": "123",
-        "encrypted_password": "MTIz",
-        "date": "2026-11-15"
-    },
-    {
-        "id": 5,
-        "site": "Strona",
-        "encrypted_password": "MTIzMTIzMTIzMTIz",
+        "encrypted_password": "Q3JlZG9nb29nbGVDcmVkbw==",
         "date": "2026-11-15"
     }
 ]
