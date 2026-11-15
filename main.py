@@ -1,11 +1,61 @@
 import base64
 import json
+import ntpath
 import os
+import posixpath
+import shutil
+import sys
 from datetime import datetime
 import flet as ft
 
-DATA_FILE = "data.json"
-SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
+def get_storage_directory(is_frozen=None, platform=None, environ=None, home=None):
+    is_frozen = getattr(sys, "frozen", False) if is_frozen is None else is_frozen
+    platform = sys.platform if platform is None else platform
+    environ = os.environ if environ is None else environ
+    home = os.path.expanduser("~") if home is None else home
+
+    if not is_frozen:
+        return os.path.dirname(os.path.abspath(__file__))
+    path_module = ntpath if platform == "win32" else posixpath if platform.startswith("linux") else os.path
+    if platform == "win32":
+        base_directory = environ.get("APPDATA") or path_module.join(home, "AppData", "Roaming")
+    else:
+        base_directory = environ.get("XDG_DATA_HOME") or path_module.join(home, ".local", "share")
+    return path_module.join(base_directory, "CVault")
+
+
+def migrate_packaged_storage(data_directory, executable_path=None, is_frozen=None):
+    is_frozen = getattr(sys, "frozen", False) if is_frozen is None else is_frozen
+    if not is_frozen:
+        return
+
+    executable_path = sys.executable if executable_path is None else executable_path
+    executable_directory = os.path.dirname(os.path.abspath(executable_path))
+    legacy_directories = [executable_directory]
+    if os.path.basename(executable_directory).lower() == "dist":
+        legacy_directories.append(os.path.dirname(executable_directory))
+
+    os.makedirs(data_directory, exist_ok=True)
+    for filename in ("data.json", "settings.json"):
+        destination = os.path.join(data_directory, filename)
+        if os.path.exists(destination):
+            continue
+        for legacy_directory in legacy_directories:
+            source = os.path.join(legacy_directory, filename)
+            if (
+                os.path.isfile(source)
+                and os.path.normcase(os.path.abspath(source)) != os.path.normcase(os.path.abspath(destination))
+            ):
+                shutil.copy2(source, destination)
+                break
+
+
+DATA_DIRECTORY = get_storage_directory()
+os.makedirs(DATA_DIRECTORY, exist_ok=True)
+DATA_FILE = os.path.join(DATA_DIRECTORY, "data.json")
+SETTINGS_FILE = os.path.join(DATA_DIRECTORY, "settings.json")
+if getattr(sys, "frozen", False):
+    migrate_packaged_storage(DATA_DIRECTORY)
 DEFAULT_SETTINGS = {"language": "en", "theme": "dark", "seed": ""}
 
 def save_settings(settings):
@@ -782,7 +832,7 @@ def main(page: ft.Page):
                                     [
                                         header_title,
                                         ft.Container(
-                                            content=ft.Text("v1.0", size=10, color="#818CF8", weight=ft.FontWeight.BOLD),
+                                            content=ft.Text("v1.2", size=10, color="#818CF8", weight=ft.FontWeight.BOLD),
                                             bgcolor="#1E1B4B",
                                             padding=ft.Padding(6, 2, 6, 2),
                                             border_radius=6,
@@ -817,4 +867,5 @@ def main(page: ft.Page):
         container,
     )
 
-ft.run(main, assets_dir="assets")
+if __name__ == "__main__":
+    ft.run(main, assets_dir=os.path.join(os.path.dirname(__file__), "assets"))
