@@ -1,3 +1,5 @@
 build/
 *.spec
 __pycache__/
+data.json
+settings.json
