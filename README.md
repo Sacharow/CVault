@@ -16,6 +16,10 @@ On first launch, create a master password with at least 8 characters. Existing p
 
 If you forget the master password, use Forgot password? Erase vault data on the unlock screen. After confirmation, CVault deletes its local settings and vault files and lets you create a new vault. This is irreversible; backups and copies outside CVault's storage are not affected.
 
+## Important Note
+
+Do not use both CVault and CVault-Secure, the encryption methods are not compatible. Mixing them may cause different password to generate.
+
 ## Install build dependencies
 
 Install Python 3.10 or later, then run from the project directory:
