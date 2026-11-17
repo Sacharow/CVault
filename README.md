@@ -2,7 +2,19 @@
 
 CVault is a small Flet desktop application.
 
-> **Security warning:** This checked-in version stores passwords using Base64 with an optional seed. Base64 is reversible and is not encryption. Do not use this build to protect real credentials.
+There are two types of executable files in the dist folder, one for simpler but less secure storage of vault entries, and one for more secure storage.
+
+Addionally, CVault supports both Windows and Linux.
+
+While simpler storage is easier to use, it is less secure. The more secure storage uses a master password to encrypt the vault entries and settings.
+
+## Security of CVault-Secure
+
+CVault protects the settings (including the seed) and vault entries with AES-GCM. A master password is processed with Argon2id; derived keys are kept in memory only while the app is running. Encrypted values remain Base64-encoded for display and copying.
+
+On first launch, create a master password with at least 8 characters. Existing plaintext settings are encrypted during setup. Existing data.json entries remain readable and are encrypted the next time vault data is saved (for example, when adding or deleting an entry). Keep a backup before upgrading. The master password cannot be recovered, so losing it makes the encrypted settings and vault data inaccessible.
+
+If you forget the master password, use Forgot password? Erase vault data on the unlock screen. After confirmation, CVault deletes its local settings and vault files and lets you create a new vault. This is irreversible; backups and copies outside CVault's storage are not affected.
 
 ## Install build dependencies
 

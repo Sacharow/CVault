@@ -832,7 +832,7 @@ def main(page: ft.Page):
                                     [
                                         header_title,
                                         ft.Container(
-                                            content=ft.Text("v1.2", size=10, color="#818CF8", weight=ft.FontWeight.BOLD),
+                                            content=ft.Text("v1.4", size=10, color="#818CF8", weight=ft.FontWeight.BOLD),
                                             bgcolor="#1E1B4B",
                                             padding=ft.Padding(6, 2, 6, 2),
                                             border_radius=6,
