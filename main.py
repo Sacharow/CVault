@@ -1,4 +1,5 @@
 import base64
+import binascii
 import json
 import ntpath
 import os
@@ -7,6 +8,10 @@ import shutil
 import sys
 from datetime import datetime
 import flet as ft
+from vault_crypto import decrypt_bytes, derive_keys, encrypt_bytes, encrypt_text
+
+LEGACY_MIGRATION_MARKER = ".legacy-migration-disabled"
+
 
 def get_storage_directory(is_frozen=None, platform=None, environ=None, home=None):
     is_frozen = getattr(sys, "frozen", False) if is_frozen is None else is_frozen
@@ -29,13 +34,16 @@ def migrate_packaged_storage(data_directory, executable_path=None, is_frozen=Non
     if not is_frozen:
         return
 
+    os.makedirs(data_directory, exist_ok=True)
+    if os.path.exists(os.path.join(data_directory, LEGACY_MIGRATION_MARKER)):
+        return
+
     executable_path = sys.executable if executable_path is None else executable_path
     executable_directory = os.path.dirname(os.path.abspath(executable_path))
     legacy_directories = [executable_directory]
     if os.path.basename(executable_directory).lower() == "dist":
         legacy_directories.append(os.path.dirname(executable_directory))
 
-    os.makedirs(data_directory, exist_ok=True)
     for filename in ("data.json", "settings.json"):
         destination = os.path.join(data_directory, filename)
         if os.path.exists(destination):
@@ -50,6 +58,18 @@ def migrate_packaged_storage(data_directory, executable_path=None, is_frozen=Non
                 break
 
 
+def erase_vault_files(is_frozen=None):
+    is_frozen = getattr(sys, "frozen", False) if is_frozen is None else is_frozen
+    data_directory = os.path.dirname(DATA_FILE)
+    if is_frozen:
+        os.makedirs(data_directory, exist_ok=True)
+        with open(os.path.join(data_directory, LEGACY_MIGRATION_MARKER), "w", encoding="utf-8"):
+            pass
+    for path in (DATA_FILE, SETTINGS_FILE):
+        if os.path.exists(path):
+            os.remove(path)
+
+
 DATA_DIRECTORY = get_storage_directory()
 os.makedirs(DATA_DIRECTORY, exist_ok=True)
 DATA_FILE = os.path.join(DATA_DIRECTORY, "data.json")
@@ -57,22 +77,12 @@ SETTINGS_FILE = os.path.join(DATA_DIRECTORY, "settings.json")
 if getattr(sys, "frozen", False):
     migrate_packaged_storage(DATA_DIRECTORY)
 DEFAULT_SETTINGS = {"language": "en", "theme": "dark", "seed": ""}
+SETTINGS_FORMAT = "cvault-settings-v1"
+DATA_FORMAT = "cvault-data-v1"
 
-def save_settings(settings):
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=4, ensure_ascii=False)
-
-def load_settings():
-    if not os.path.exists(SETTINGS_FILE):
-        settings = DEFAULT_SETTINGS.copy()
-        save_settings(settings)
-        return settings
-
-    with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-        stored_settings = json.load(f)
+def _normalize_settings(stored_settings):
     if not isinstance(stored_settings, dict):
         raise ValueError(f"{SETTINGS_FILE} must contain a JSON object")
-
     settings = {
         key: stored_settings.get(key, default)
         for key, default in DEFAULT_SETTINGS.items()
@@ -83,9 +93,70 @@ def load_settings():
         settings["theme"] = DEFAULT_SETTINGS["theme"]
     if not isinstance(settings["seed"], str):
         settings["seed"] = DEFAULT_SETTINGS["seed"]
-    if settings != stored_settings:
-        save_settings(settings)
     return settings
+
+
+def is_settings_encrypted():
+    if not os.path.exists(SETTINGS_FILE):
+        return False
+    with open(SETTINGS_FILE, "r", encoding="utf-8") as file:
+        stored_settings = json.load(file)
+    return isinstance(stored_settings, dict) and stored_settings.get("format") == SETTINGS_FORMAT
+
+
+def load_legacy_settings():
+    if not os.path.exists(SETTINGS_FILE):
+        return DEFAULT_SETTINGS.copy()
+    with open(SETTINGS_FILE, "r", encoding="utf-8") as file:
+        stored_settings = json.load(file)
+    if isinstance(stored_settings, dict) and "format" in stored_settings:
+        if stored_settings.get("format") == SETTINGS_FORMAT:
+            raise ValueError("Encrypted settings must be unlocked with the master password")
+        raise ValueError("Settings use an unsupported encrypted format")
+    return _normalize_settings(stored_settings)
+
+
+def load_settings(password):
+    with open(SETTINGS_FILE, "r", encoding="utf-8") as file:
+        envelope = json.load(file)
+    if not isinstance(envelope, dict) or envelope.get("format") != SETTINGS_FORMAT:
+        raise ValueError("Settings are not encrypted with a master password")
+    if envelope.get("kdf") != "argon2id":
+        raise ValueError("Unsupported settings key-derivation format")
+    if not isinstance(envelope.get("salt"), str):
+        raise ValueError("Settings contain an invalid Argon2id salt")
+    try:
+        salt = base64.b64decode(envelope["salt"], validate=True)
+    except (KeyError, binascii.Error, ValueError) as error:
+        raise ValueError("Settings contain an invalid Argon2id salt") from error
+    if not isinstance(envelope.get("ciphertext"), str):
+        raise ValueError("Settings contain invalid encrypted data")
+    salt, settings_key, data_key = derive_keys(password, salt)
+    plaintext = decrypt_bytes(envelope["ciphertext"], settings_key)
+    try:
+        stored_settings = json.loads(plaintext.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("Decrypted settings are invalid") from error
+    return _normalize_settings(stored_settings), salt, settings_key, data_key
+
+
+def save_settings(settings, salt, settings_key):
+    encrypted_settings = encrypt_bytes(
+        json.dumps(settings, ensure_ascii=False).encode("utf-8"),
+        settings_key,
+    )
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "format": SETTINGS_FORMAT,
+                "kdf": "argon2id",
+                "salt": base64.b64encode(salt).decode("ascii"),
+                "ciphertext": encrypted_settings,
+            },
+            file,
+            indent=4,
+            ensure_ascii=False,
+        )
 
 def get_theme_colors(settings):
     is_dark = settings["theme"] == "dark"
@@ -104,14 +175,70 @@ def translate(settings, english, polish):
     return polish if settings["language"] == "pl" else english
 
 # --- Helper Functions ---
-def load_data():
+def load_data(data_key=None):
     if not os.path.exists(DATA_FILE):
         return []
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        stored_data = json.load(f)
+    if isinstance(stored_data, dict) and stored_data.get("format") == DATA_FORMAT:
+        if data_key is None:
+            raise ValueError("Vault data must be unlocked with the master password")
+        entries = stored_data.get("entries")
+        if not isinstance(entries, list):
+            raise ValueError(f"{DATA_FILE} contains an invalid encrypted entries list")
+        decrypted_entries = []
+        for encrypted_entry in entries:
+            if not isinstance(encrypted_entry, str):
+                raise ValueError(f"{DATA_FILE} contains an invalid encrypted entry")
+            try:
+                entry = json.loads(decrypt_bytes(encrypted_entry, data_key).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValueError("Decrypted vault entry is invalid") from error
+            if not isinstance(entry, dict):
+                raise ValueError("Decrypted vault entry must be a JSON object")
+            decrypted_entries.append(entry)
+        return decrypted_entries
+    if not isinstance(stored_data, list):
+        raise ValueError(f"{DATA_FILE} must contain a JSON array")
+    return stored_data
+
+
+def save_data(data, data_key, seed=""):
+    encrypted_entries = []
+    for existing_entry in data:
+        if not isinstance(existing_entry, dict):
+            raise ValueError("Vault entries must be JSON objects")
+        entry = existing_entry.copy()
+        if entry.get("password_format") != 1:
+            stored_legacy_password = entry.get("encrypted_password")
+            if stored_legacy_password is None:
+                legacy_password = entry.get("password", "")
+            else:
+                legacy_password = stored_legacy_password
+            if not isinstance(legacy_password, str):
+                raise ValueError("Vault entry password must be a string")
+            if stored_legacy_password is None:
+                decoded_password = legacy_password
+            else:
+                try:
+                    decoded_password = base64.b64decode(legacy_password, validate=True).decode("utf-8")
+                except (binascii.Error, UnicodeDecodeError, ValueError):
+                    decoded_password = legacy_password
+            if seed and decoded_password.startswith(seed) and decoded_password.endswith(seed):
+                decoded_password = decoded_password[len(seed):-len(seed)]
+                decoded_password = f"{seed}{decoded_password}{seed}"
+            entry["encrypted_password"] = encrypt_text(decoded_password, data_key)
+            entry["password_format"] = 1
+        encrypted_entries.append(
+            encrypt_bytes(json.dumps(entry, ensure_ascii=False).encode("utf-8"), data_key)
+        )
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(
+            {"format": DATA_FORMAT, "entries": encrypted_entries},
+            f,
+            indent=4,
+            ensure_ascii=False,
+        )
 
 def open_dialog(page: ft.Page, dialog: ft.AlertDialog):
     open_fn = getattr(page, "open", None)
@@ -131,12 +258,11 @@ def close_dialog(page: ft.Page, dialog: ft.AlertDialog):
         dialog.open = False
         page.update()
 
-def save_entry(source: str, password: str, seed: str = ""):
-    """Encode the password, wrapped with the configured seed, and store it in data.json."""
+def save_entry(source: str, password: str, seed: str, data_key):
+    """Encrypt an entry password and store its Base64 ciphertext in data.json."""
     fused_password = f"{seed}{password}{seed}"
-    encrypted = base64.b64encode(fused_password.encode("utf-8")).decode("ascii")
-    # Load, append, and write back
-    data = load_data()
+    encrypted = encrypt_text(fused_password, data_key)
+    data = load_data(data_key)
     existing_ids = [item["id"] for item in data if isinstance(item, dict) and isinstance(item.get("id"), int)]
     next_id = (max(existing_ids) + 1) if existing_ids else (len(data) + 1)
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -145,14 +271,15 @@ def save_entry(source: str, password: str, seed: str = ""):
         "id": next_id,
         "site": source.strip(),
         "encrypted_password": encrypted,
+        "password_format": 1,
         "date": current_date
     })
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    save_data(data, data_key, seed)
 
-def delete_entry(identifier=None, target_id=None, site=None):
+
+def delete_entry(data_key, seed="", identifier=None, target_id=None, site=None):
     """Delete an entry by its ID or site name."""
-    data = load_data()
+    data = load_data(data_key)
     t_id = target_id if target_id is not None else (identifier if isinstance(identifier, int) else None)
     t_site = site if site is not None else (identifier if isinstance(identifier, str) else None)
 
@@ -161,20 +288,19 @@ def delete_entry(identifier=None, target_id=None, site=None):
     elif t_site is not None:
         data = [item for item in data if item.get("site") != t_site]
 
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    save_data(data, data_key, seed)
 
 # --- UI Builders ---
-def build_list_view(page: ft.Page, on_refresh=None, settings=None):
+def build_list_view(page: ft.Page, on_refresh=None, settings=None, data_key=None):
     settings = settings or DEFAULT_SETTINGS
     colors = get_theme_colors(settings)
-    items = load_data()
+    items = load_data(data_key)
 
     def make_delete_handler(target_id, target_site):
         def show_confirm_dialog(e):
             def on_confirm(ce):
                 close_dialog(page, dialog)
-                delete_entry(target_id=target_id, site=target_site)
+                delete_entry(data_key, settings["seed"], target_id=target_id, site=target_site)
                 if on_refresh:
                     on_refresh()
                 else:
@@ -408,7 +534,7 @@ def build_list_view(page: ft.Page, on_refresh=None, settings=None):
 
     def refresh_data():
         nonlocal items
-        items = load_data()
+        items = load_data(data_key)
         update_view()
 
     search_field = ft.TextField(
@@ -469,7 +595,7 @@ def build_list_view(page: ft.Page, on_refresh=None, settings=None):
         spacing=8,
     )
 
-def build_add_view(page: ft.Page, settings=None):
+def build_add_view(page: ft.Page, settings=None, data_key=None):
     settings = settings or DEFAULT_SETTINGS
     colors = get_theme_colors(settings or DEFAULT_SETTINGS)
     src_field = ft.TextField(
@@ -500,7 +626,7 @@ def build_add_view(page: ft.Page, settings=None):
             status.color = "#EF4444"
             page.update()
             return
-        save_entry(src, pwd, settings["seed"])
+        save_entry(src, pwd, settings["seed"], data_key)
         status.value = translate(settings, "✓ Saved successfully!", "✓ Zapisano pomyślnie!")
         status.color = "#10B981"
         src_field.value = ""
@@ -642,8 +768,8 @@ def build_settings_view(page: ft.Page, settings, on_change):
                 ft.Text(
                     translate(
                         settings,
-                        "Changing this seed changes the password output. Use the same seed on every device for matching results. This does not add cryptographic security.",
-                        "Zmiana ziarna zmienia wynik hasła. Aby uzyskać taki sam wynik na każdym urządzeniu, ustaw na nich to samo ziarno. Nie zwiększa to bezpieczeństwa kryptograficznego.",
+                        "The seed is added to the password before encryption. It does not replace your master password.",
+                        "Ziarno jest dodawane do hasła przed szyfrowaniem. Nie zastępuje hasła głównego.",
                     ),
                     size=11,
                     color=colors["muted"],
@@ -668,8 +794,17 @@ def build_settings_view(page: ft.Page, settings, on_change):
     )
 
 # --- Main Application ---
-def main(page: ft.Page):
-    settings = load_settings()
+_VAULT_CONTEXT: tuple[dict[str, str], bytes, bytes, bytes] | None = None
+
+
+def set_window_icon(page: ft.Page):
+    icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
+    if os.path.exists(icon_path):
+        page.window.icon = icon_path
+
+
+def show_vault(page: ft.Page, context):
+    settings, salt, settings_key, data_key = context
     colors = get_theme_colors(settings)
     page.title = "CVault"
     page.theme_mode = ft.ThemeMode.LIGHT if settings["theme"] == "light" else ft.ThemeMode.DARK
@@ -677,9 +812,7 @@ def main(page: ft.Page):
     page.padding = 24
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
 
-    icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
-    if os.path.exists(icon_path):
-        page.window.icon = icon_path
+    set_window_icon(page)
 
     page.window.width = 880
     page.window.height = 720
@@ -706,7 +839,7 @@ def main(page: ft.Page):
         if key == "seed":
             value = value or ""
         settings[key] = value
-        save_settings(settings)
+        save_settings(settings, salt, settings_key)
         if key in ("theme", "language"):
             colors = get_theme_colors(settings)
             if key == "theme":
@@ -724,9 +857,11 @@ def main(page: ft.Page):
             if active_tab == "settings":
                 container.controls = [build_settings_view(page, settings, update_setting)]
             elif active_tab == "list":
-                container.controls = [build_list_view(page, on_refresh=show_list, settings=settings)]
+                container.controls = [
+                    build_list_view(page, on_refresh=show_list, settings=settings, data_key=data_key)
+                ]
             else:
-                container.controls = [build_add_view(page, settings=settings)]
+                container.controls = [build_add_view(page, settings=settings, data_key=data_key)]
             page.update()
 
     def update_navigation():
@@ -798,14 +933,16 @@ def main(page: ft.Page):
         nonlocal active_tab
         active_tab = "list"
         update_navigation()
-        container.controls = [build_list_view(page, on_refresh=show_list, settings=settings)]
+        container.controls = [
+            build_list_view(page, on_refresh=show_list, settings=settings, data_key=data_key)
+        ]
         page.update()
 
     def show_add(e=None):
         nonlocal active_tab
         active_tab = "add"
         update_navigation()
-        container.controls = [build_add_view(page, settings=settings)]
+        container.controls = [build_add_view(page, settings=settings, data_key=data_key)]
         page.update()
 
     def show_settings(e=None):
@@ -832,7 +969,7 @@ def main(page: ft.Page):
                                     [
                                         header_title,
                                         ft.Container(
-                                            content=ft.Text("v1.2", size=10, color="#818CF8", weight=ft.FontWeight.BOLD),
+                                            content=ft.Text("v1.3", size=10, color="#818CF8", weight=ft.FontWeight.BOLD),
                                             bgcolor="#1E1B4B",
                                             padding=ft.Padding(6, 2, 6, 2),
                                             border_radius=6,
@@ -858,7 +995,9 @@ def main(page: ft.Page):
     )
 
     update_navigation()
-    container.controls = [build_list_view(page, on_refresh=show_list, settings=settings)]
+    container.controls = [
+        build_list_view(page, on_refresh=show_list, settings=settings, data_key=data_key)
+    ]
 
     page.add(
         header,
@@ -866,6 +1005,142 @@ def main(page: ft.Page):
         ft.Container(height=8),
         container,
     )
+
+
+def show_lock_screen(page: ft.Page):
+    global _VAULT_CONTEXT
+    encrypted_settings = is_settings_encrypted()
+    page.title = "CVault"
+    set_window_icon(page)
+    page.window.width = 520
+    page.window.height = 500 if encrypted_settings else 420
+    page.window.min_width = 420
+    page.window.min_height = 360
+    password_field = ft.TextField(
+        label="Master password",
+        password=True,
+        can_reveal_password=True,
+        autofocus=True,
+        width=320,
+    )
+    confirm_field = ft.TextField(
+        label="Confirm master password",
+        password=True,
+        can_reveal_password=True,
+        width=320,
+        visible=not encrypted_settings,
+    )
+    status = ft.Text("", color="#EF4444", text_align=ft.TextAlign.CENTER)
+
+    def unlock(e):
+        global _VAULT_CONTEXT
+        password = password_field.value or ""
+        if len(password) < 8:
+            status.value = "Use a master password with at least 8 characters."
+            page.update()
+            return
+        if not encrypted_settings and password != (confirm_field.value or ""):
+            status.value = "The master passwords do not match."
+            page.update()
+            return
+        try:
+            if encrypted_settings:
+                settings, salt, settings_key, data_key = load_settings(password)
+            else:
+                settings = load_legacy_settings()
+                salt, settings_key, data_key = derive_keys(password)
+                save_settings(settings, salt, settings_key)
+        except (ValueError, KeyError, json.JSONDecodeError) as error:
+            status.value = str(error)
+            page.update()
+            return
+
+        context = (settings, salt, settings_key, data_key)
+        _VAULT_CONTEXT = context
+        page.clean()
+        show_vault(page, context)
+
+    def request_reset(e):
+        def cancel_reset(event):
+            close_dialog(page, dialog)
+
+        def confirm_reset(event):
+            global _VAULT_CONTEXT
+            close_dialog(page, dialog)
+            try:
+                erase_vault_files()
+            except OSError as error:
+                status.value = f"Could not erase vault files: {error}"
+                page.update()
+                return
+            _VAULT_CONTEXT = None
+            page.clean()
+            show_lock_screen(page)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Erase vault data?"),
+            content=ft.Text(
+                "This permanently deletes CVault's local data and settings so you can create a new vault. "
+                "The old vault cannot be recovered. Backups and copies outside CVault storage are not affected."
+            ),
+            actions=[
+                ft.Button("Cancel", on_click=cancel_reset),
+                ft.Button(
+                    "Erase vault",
+                    on_click=confirm_reset,
+                    style=ft.ButtonStyle(bgcolor="#B91C1C", color="white"),
+                ),
+            ],
+        )
+        open_dialog(page, dialog)
+
+    controls = [
+        ft.Text(
+            "Unlock CVault" if encrypted_settings else "Create master password",
+            size=22,
+            weight=ft.FontWeight.BOLD,
+        ),
+        ft.Text(
+            "Your master password encrypts settings and vault data. It cannot be recovered if lost.",
+            width=340,
+            text_align=ft.TextAlign.CENTER,
+        ),
+        password_field,
+        confirm_field,
+        ft.Button(
+            "Unlock" if encrypted_settings else "Create vault",
+            on_click=unlock,
+        ),
+    ]
+    if encrypted_settings:
+        controls.append(
+            ft.Button(
+                "Forgot password? Erase vault data",
+                on_click=request_reset,
+                style=ft.ButtonStyle(bgcolor="#7F1D1D", color="white"),
+            )
+        )
+    controls.append(status)
+    page.add(
+        ft.Container(
+            content=ft.Column(
+                controls,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=14,
+            ),
+            alignment=ft.Alignment(0, 0),
+            expand=True,
+        )
+    )
+
+
+def main(page: ft.Page):
+    if _VAULT_CONTEXT is None:
+        show_lock_screen(page)
+    else:
+        show_vault(page, _VAULT_CONTEXT)
+
 
 if __name__ == "__main__":
     ft.run(main, assets_dir=os.path.join(os.path.dirname(__file__), "assets"))

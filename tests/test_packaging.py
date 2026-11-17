@@ -78,6 +78,39 @@ class PackagingStorageTests(unittest.TestCase):
             main.migrate_packaged_storage(directory, is_frozen=False)
             self.assertEqual(os.listdir(directory), [])
 
+    def test_erased_vault_does_not_reimport_packaged_legacy_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project_directory = os.path.join(directory, "project")
+            dist_directory = os.path.join(project_directory, "dist")
+            storage_directory = os.path.join(directory, "user-data", "CVault")
+            os.makedirs(dist_directory)
+            os.makedirs(storage_directory)
+            with open(os.path.join(project_directory, "data.json"), "w", encoding="utf-8") as file:
+                json.dump([{"site": "legacy"}], file)
+            with open(os.path.join(project_directory, "settings.json"), "w", encoding="utf-8") as file:
+                json.dump({"theme": "dark"}, file)
+
+            old_data_path = main.DATA_FILE
+            old_settings_path = main.SETTINGS_FILE
+            main.DATA_FILE = os.path.join(storage_directory, "data.json")
+            main.SETTINGS_FILE = os.path.join(storage_directory, "settings.json")
+            try:
+                main.erase_vault_files(is_frozen=True)
+                main.migrate_packaged_storage(
+                    storage_directory,
+                    executable_path=os.path.join(dist_directory, "CVault.exe"),
+                    is_frozen=True,
+                )
+            finally:
+                main.DATA_FILE = old_data_path
+                main.SETTINGS_FILE = old_settings_path
+
+            self.assertFalse(os.path.exists(os.path.join(storage_directory, "data.json")))
+            self.assertFalse(os.path.exists(os.path.join(storage_directory, "settings.json")))
+            self.assertTrue(
+                os.path.exists(os.path.join(storage_directory, main.LEGACY_MIGRATION_MARKER))
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
