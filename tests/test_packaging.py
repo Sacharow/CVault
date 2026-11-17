@@ -73,6 +73,25 @@ class PackagingStorageTests(unittest.TestCase):
             with open(migrated_data_path, "r", encoding="utf-8") as file:
                 self.assertEqual(json.load(file), [])
 
+    def test_linux_build_in_dist_subdirectory_copies_project_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project_directory = os.path.join(directory, "project")
+            executable_directory = os.path.join(project_directory, "dist", "linux")
+            storage_directory = os.path.join(directory, "user-data", "CVault")
+            os.makedirs(executable_directory)
+            legacy_data = [{"site": "example.test", "password": "sample"}]
+            with open(os.path.join(project_directory, "data.json"), "w", encoding="utf-8") as file:
+                json.dump(legacy_data, file)
+
+            main.migrate_packaged_storage(
+                storage_directory,
+                executable_path=os.path.join(executable_directory, "CVault"),
+                is_frozen=True,
+            )
+
+            with open(os.path.join(storage_directory, "data.json"), "r", encoding="utf-8") as file:
+                self.assertEqual(json.load(file), legacy_data)
+
     def test_source_run_does_not_migrate_packaged_files(self):
         with tempfile.TemporaryDirectory() as directory:
             main.migrate_packaged_storage(directory, is_frozen=False)

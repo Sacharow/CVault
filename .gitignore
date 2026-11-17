@@ -1,5 +1,6 @@
 build/
 *.spec
+.venv/
 __pycache__/
 data.json
 settings.json

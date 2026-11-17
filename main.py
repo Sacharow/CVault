@@ -32,8 +32,11 @@ def migrate_packaged_storage(data_directory, executable_path=None, is_frozen=Non
     executable_path = sys.executable if executable_path is None else executable_path
     executable_directory = os.path.dirname(os.path.abspath(executable_path))
     legacy_directories = [executable_directory]
+    parent_directory = os.path.dirname(executable_directory)
     if os.path.basename(executable_directory).lower() == "dist":
         legacy_directories.append(os.path.dirname(executable_directory))
+    elif os.path.basename(parent_directory).lower() == "dist":
+        legacy_directories.extend([parent_directory, os.path.dirname(parent_directory)])
 
     os.makedirs(data_directory, exist_ok=True)
     for filename in ("data.json", "settings.json"):

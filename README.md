@@ -22,10 +22,11 @@ Do not use both CVault and CVault-Secure, the encryption methods are not compati
 
 ## Install build dependencies
 
-Install Python 3.10 or later, then run from the project directory:
+Install Python 3.10 or later, then create a virtual environment and install the dependencies from the project directory:
 
 ```shell
-python -m pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 ## Build for Windows
@@ -51,7 +52,7 @@ chmod +x build_linux.sh
 ./build_linux.sh
 ```
 
-The executable is created at `dist/CVault`. Run it from `dist` once before moving it to allow existing project data and settings to be copied to the per-user storage location. Linux builds do not include a desktop icon yet.
+The executable is created at `dist/linux/CVault`, keeping it separate from Windows builds in `dist`. Run it once before moving it to allow existing project data and settings to be copied to the per-user storage location. Linux builds do not include a desktop icon yet.
 
 ## Data locations
 

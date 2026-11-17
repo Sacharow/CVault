@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=CVault
+Exec="/home/bartosz/Documents/VSCode/Personal Projects/CVault/dist/linux/CVault"
+Icon=CVault
+Terminal=false
+Categories=Utility;
+StartupWMClass=CVault
